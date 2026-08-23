@@ -12,7 +12,7 @@ import {
   recognizeImageText,
   translateSentence
 } from "./ollama";
-import { countWords, Language, splitSentences } from "./text";
+import { countWords, Language, normalizePastedText, splitSentences } from "./text";
 
 const DEFAULT_MODEL = "translategemma:12b-it-q4_K_M";
 const STORAGE_KEY = "parallel-translator-document-v1";
@@ -96,6 +96,7 @@ function App() {
   const runId = useRef(0);
   const ocrRunId = useRef(0);
   const previousOcrLanguage = useRef(sourceLanguage);
+  const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
 
   const sentences = useMemo(
     () => splitSentences(source, sourceLanguage),
@@ -239,7 +240,32 @@ function App() {
     const imageItem = Array.from(event.clipboardData.items).find((item) =>
       item.type.startsWith("image/")
     );
-    if (!imageItem) return;
+    if (!imageItem) {
+      const pastedText = event.clipboardData.getData("text/plain");
+      if (!pastedText) return;
+
+      event.preventDefault();
+      const formattedText = normalizePastedText(pastedText);
+      ocrRunId.current += 1;
+      setPastedImage(null);
+      setSourceView("text");
+      setOcrState("idle");
+      setOcrElapsedMs(null);
+      setOcrError(null);
+
+      const editor = sourceEditorRef.current;
+      const selectionStart = editor?.selectionStart ?? source.length;
+      const selectionEnd = editor?.selectionEnd ?? source.length;
+      const nextSource = `${source.slice(0, selectionStart)}${formattedText}${source.slice(selectionEnd)}`;
+      const nextCursor = selectionStart + formattedText.length;
+      setSource(nextSource);
+
+      window.requestAnimationFrame(() => {
+        sourceEditorRef.current?.focus();
+        sourceEditorRef.current?.setSelectionRange(nextCursor, nextCursor);
+      });
+      return;
+    }
 
     event.preventDefault();
     const imageFile = imageItem.getAsFile();
@@ -457,6 +483,7 @@ function App() {
             </div>
           ) : (
             <textarea
+              ref={sourceEditorRef}
               className="source-editor"
               value={source}
               onChange={(event) => setSource(event.target.value)}

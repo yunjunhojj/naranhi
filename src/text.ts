@@ -35,3 +35,50 @@ export function splitSentences(source: string, language: Language): Sentence[] {
 export function countWords(source: string): number {
   return source.trim() ? source.trim().split(/\s+/).length : 0;
 }
+
+const LIST_ITEM_PATTERN = /^(?:[-*•▪◦‣]\s+|\(?\d+[.)]\s+|[A-Za-z][.)]\s+)/;
+
+function cleanInlineSpacing(value: string): string {
+  return value
+    .replace(/[\t ]+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/([([{])\s+/g, "$1")
+    .replace(/\s+([)\]}])/g, "$1")
+    .trim();
+}
+
+function joinWrappedLines(block: string): string {
+  const lines = block
+    .split("\n")
+    .map(cleanInlineSpacing)
+    .filter(Boolean);
+
+  return lines.reduce((result, line) => {
+    if (!result) return line;
+
+    const resultLines = result.split("\n");
+    const previousLine = resultLines[resultLines.length - 1];
+    if (LIST_ITEM_PATTERN.test(line)) {
+      return `${result}\n${line}`;
+    }
+
+    if (previousLine.endsWith("-")) return `${result}${line}`;
+    return `${result} ${line}`;
+  }, "");
+}
+
+export function normalizePastedText(value: string): string {
+  const normalizedLines = value
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00ad/g, "")
+    .replace(/\u00a0/g, " ")
+    .trim();
+
+  if (!normalizedLines) return "";
+
+  return normalizedLines
+    .split(/\n\s*\n+/)
+    .map(joinWrappedLines)
+    .filter(Boolean)
+    .join("\n\n");
+}
