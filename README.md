@@ -1,5 +1,8 @@
 # 나란히
 
+[![CI](https://github.com/yunjunhojj/naranhi/actions/workflows/ci.yml/badge.svg)](https://github.com/yunjunhojj/naranhi/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2f5d50.svg)](LICENSE)
+
 Ollama와 TranslateGemma를 사용하는 Tauri + React 기반 로컬 병렬 번역 에디터입니다. 원문을 왼쪽에 작성하면 문장별 번역이 오른쪽에 나타납니다.
 
 ## 프로젝트 목표
@@ -17,6 +20,10 @@ Ollama와 TranslateGemma를 사용하는 Tauri + React 기반 로컬 병렬 번�
 - **개인 작업 보존:** 원문, 번역문, 모델 및 언어 설정을 로컬에 자동 저장합니다.
 
 현재 범위는 영어와 한국어의 텍스트 및 캡처 이미지 번역입니다. 클라우드 번역, 공동 편집, 원본 서식을 보존하는 문서 번역 및 다른 언어는 현재 목표에 포함하지 않습니다.
+
+## 지원 환경
+
+현재 배포 및 OCR 기능은 macOS를 지원합니다. 번역 UI와 Ollama 연동은 Tauri 기반의 공통 구조이며, Windows 및 Linux용 OCR 백엔드와 설치 패키지는 향후 추가할 수 있습니다.
 
 ## 사용자 흐름
 
@@ -98,3 +105,9 @@ npm run tauri build -- --bundles app
 ```
 
 생성된 앱은 `src-tauri/target/release/bundle/macos/나란히.app`에 저장됩니다.
+
+## 오픈소스 참여
+
+버그 제보와 기능 제안은 [GitHub Issues](https://github.com/yunjunhojj/naranhi/issues), 일반적인 논의는 [GitHub Discussions](https://github.com/yunjunhojj/naranhi/discussions)를 이용해 주세요. 기여를 시작하기 전에 [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [SECURITY.md](SECURITY.md)를 확인해 주세요.
+
+이 프로젝트는 [MIT License](LICENSE)로 배포됩니다.

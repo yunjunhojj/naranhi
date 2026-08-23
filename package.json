@@ -2,6 +2,16 @@
   "name": "parallel-translator",
   "private": true,
   "version": "0.1.0",
+  "description": "A local English-Korean parallel translation editor powered by Ollama",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yunjunhojj/naranhi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yunjunhojj/naranhi/issues"
+  },
+  "homepage": "https://github.com/yunjunhojj/naranhi#readme",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -2,8 +2,11 @@
 name = "parallel-translator"
 version = "0.1.0"
 description = "A local side-by-side translation editor"
-authors = ["local"]
+authors = ["Junho"]
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/yunjunhojj/naranhi"
+homepage = "https://github.com/yunjunhojj/naranhi"
 
 [lib]
 name = "parallel_translator_lib"
