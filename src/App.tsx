@@ -4,15 +4,25 @@ import {
   useMemo,
   useRef,
   useState,
-  type ClipboardEvent as ReactClipboardEvent
+  type ClipboardEvent as ReactClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 import {
+  createImageBlock,
+  createTextBlock,
+  getDocumentText,
+  prepareBlocksForStorage,
+  restoreBlocks,
+  type DocumentBlock,
+  type ImageBlock
+} from "./document";
+import {
   getOllamaStatus,
-  OllamaStatus,
+  type OllamaStatus,
   recognizeImageText,
   translateSentence
 } from "./ollama";
-import { countWords, Language, normalizePastedText, splitSentences } from "./text";
+import { countWords, type Language, normalizePastedText, splitSentences } from "./text";
 
 const DEFAULT_MODEL = "translategemma:12b-it-q4_K_M";
 const STORAGE_KEY = "parallel-translator-document-v1";
@@ -23,8 +33,6 @@ const LANGUAGE_LABELS: Record<Language, { native: string }> = {
 };
 
 type TranslationState = "idle" | "queued" | "translating" | "done" | "error";
-type SourceView = "image" | "text";
-type OcrState = "idle" | "processing" | "done" | "error";
 
 type Translation = {
   source: string;
@@ -36,7 +44,8 @@ type Translation = {
 };
 
 type SavedDocument = {
-  source: string;
+  source?: string;
+  blocks?: DocumentBlock[];
   model: string;
   sourceLanguage?: Language;
   targetLanguage?: Language;
@@ -71,16 +80,21 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+function textAreaRows(value: string): number {
+  const visualLines = value
+    .split("\n")
+    .reduce((total, line) => total + Math.max(1, Math.ceil(line.length / 52)), 0);
+  return Math.max(2, visualLines);
+}
+
 function App() {
   const initial = useMemo(loadDocument, []);
-  const [source, setSource] = useState(initial.source);
+  const [blocks, setBlocks] = useState<DocumentBlock[]>(() =>
+    restoreBlocks(initial.blocks, initial.source)
+  );
   const [model, setModel] = useState(initial.model || DEFAULT_MODEL);
-  const [sourceLanguage, setSourceLanguage] = useState<Language>(
-    initial.sourceLanguage ?? "en"
-  );
-  const [targetLanguage, setTargetLanguage] = useState<Language>(
-    initial.targetLanguage ?? "ko"
-  );
+  const [sourceLanguage, setSourceLanguage] = useState<Language>(initial.sourceLanguage ?? "en");
+  const [targetLanguage, setTargetLanguage] = useState<Language>(initial.targetLanguage ?? "ko");
   const [translations, setTranslations] = useState<Record<string, Translation>>(
     initial.translations ?? {}
   );
@@ -88,21 +102,20 @@ function App() {
   const [checking, setChecking] = useState(true);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [translationRevision, setTranslationRevision] = useState(0);
-  const [pastedImage, setPastedImage] = useState<string | null>(null);
-  const [sourceView, setSourceView] = useState<SourceView>("text");
-  const [ocrState, setOcrState] = useState<OcrState>("idle");
-  const [ocrElapsedMs, setOcrElapsedMs] = useState<number | null>(null);
-  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [editingOcrBlockId, setEditingOcrBlockId] = useState<string | null>(null);
   const runId = useRef(0);
-  const ocrRunId = useRef(0);
-  const previousOcrLanguage = useRef(sourceLanguage);
-  const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
+  const nextOcrRun = useRef(0);
+  const ocrRuns = useRef(new Map<string, number>());
+  const textEditorRefs = useRef(new Map<string, HTMLTextAreaElement>());
 
-  const sentences = useMemo(
-    () => splitSentences(source, sourceLanguage),
-    [source, sourceLanguage]
-  );
+  const source = useMemo(() => getDocumentText(blocks), [blocks]);
+  const sentences = useMemo(() => splitSentences(source, sourceLanguage), [source, sourceLanguage]);
   const words = useMemo(() => countWords(source), [source]);
+  const imageBlocks = useMemo(
+    () => blocks.filter((block): block is ImageBlock => block.type === "image"),
+    [blocks]
+  );
+  const processingOcrCount = imageBlocks.filter((block) => block.ocrState === "processing").length;
 
   const checkOllama = useCallback(async () => {
     setChecking(true);
@@ -128,6 +141,7 @@ function App() {
     const timer = window.setTimeout(() => {
       const payload: SavedDocument = {
         source,
+        blocks: prepareBlocksForStorage(blocks),
         model,
         sourceLanguage,
         targetLanguage,
@@ -137,7 +151,7 @@ function App() {
       setLastSaved(new Date());
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [model, source, sourceLanguage, targetLanguage, translations]);
+  }, [blocks, model, source, sourceLanguage, targetLanguage, translations]);
 
   useEffect(() => {
     const currentRun = ++runId.current;
@@ -151,23 +165,13 @@ function App() {
 
       for (const sentence of pending) {
         if (runId.current !== currentRun) return;
-
         setTranslations((previous) => ({
           ...previous,
-          [sentence.key]: {
-            source: sentence.text,
-            target: "",
-            state: "translating"
-          }
+          [sentence.key]: { source: sentence.text, target: "", state: "translating" }
         }));
 
         try {
-          const result = await translateSentence(
-            sentence.text,
-            model,
-            sourceLanguage,
-            targetLanguage
-          );
+          const result = await translateSentence(sentence.text, model, sourceLanguage, targetLanguage);
           if (runId.current !== currentRun) return;
           setTranslations((previous) => ({
             ...previous,
@@ -194,76 +198,83 @@ function App() {
     }, 800);
 
     return () => window.clearTimeout(timer);
-  }, [
-    model,
-    sentences,
-    sourceLanguage,
-    status?.modelInstalled,
-    status?.running,
-    targetLanguage,
-    translationRevision
-  ]);
+  }, [model, sentences, sourceLanguage, status?.modelInstalled, status?.running, targetLanguage, translationRevision]);
 
-  const runOcr = useCallback(
-    async (imageDataUrl: string) => {
-      const currentRun = ++ocrRunId.current;
-      setOcrState("processing");
-      setOcrError(null);
-      setOcrElapsedMs(null);
-
-      try {
-        const result = await recognizeImageText(imageDataUrl, sourceLanguage);
-        if (ocrRunId.current !== currentRun) return;
-
-        runId.current += 1;
-        setSource(result.text);
-        setTranslations({});
-        setTranslationRevision((revision) => revision + 1);
-        setOcrElapsedMs(result.elapsedMs);
-        setOcrState("done");
-      } catch (error) {
-        if (ocrRunId.current !== currentRun) return;
-        setOcrError(error instanceof Error ? error.message : String(error));
-        setOcrState("error");
-      }
+  const updateImageBlock = useCallback(
+    (blockId: string, update: (block: ImageBlock) => ImageBlock) => {
+      setBlocks((previous) => previous.map((block) =>
+        block.type === "image" && block.id === blockId ? update(block) : block
+      ));
     },
-    [sourceLanguage]
+    []
   );
 
-  useEffect(() => {
-    if (previousOcrLanguage.current === sourceLanguage) return;
-    previousOcrLanguage.current = sourceLanguage;
-    if (pastedImage) void runOcr(pastedImage);
-  }, [pastedImage, runOcr, sourceLanguage]);
+  const runOcr = useCallback(async (
+    blockId: string,
+    imageDataUrl: string,
+    language: Language = sourceLanguage
+  ) => {
+    const currentRun = ++nextOcrRun.current;
+    ocrRuns.current.set(blockId, currentRun);
+    updateImageBlock(blockId, (block) => ({
+      ...block,
+      ocrState: "processing",
+      elapsedMs: null,
+      error: null
+    }));
 
-  const handlePaste = async (event: ReactClipboardEvent<HTMLDivElement>) => {
+    try {
+      const result = await recognizeImageText(imageDataUrl, language);
+      if (ocrRuns.current.get(blockId) !== currentRun) return;
+      runId.current += 1;
+      updateImageBlock(blockId, (block) => ({
+        ...block,
+        ocrText: normalizePastedText(result.text),
+        ocrState: "done",
+        elapsedMs: result.elapsedMs,
+        error: null
+      }));
+      setTranslationRevision((revision) => revision + 1);
+    } catch (error) {
+      if (ocrRuns.current.get(blockId) !== currentRun) return;
+      updateImageBlock(blockId, (block) => ({
+        ...block,
+        ocrState: "error",
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    }
+  }, [sourceLanguage, updateImageBlock]);
+
+  const focusTextBlock = (blockId: string, cursor: number) => {
+    window.requestAnimationFrame(() => {
+      const editor = textEditorRefs.current.get(blockId);
+      editor?.focus();
+      editor?.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const handleTextPaste = async (
+    blockId: string,
+    event: ReactClipboardEvent<HTMLTextAreaElement>
+  ) => {
     const imageItem = Array.from(event.clipboardData.items).find((item) =>
       item.type.startsWith("image/")
     );
+
     if (!imageItem) {
       const pastedText = event.clipboardData.getData("text/plain");
       if (!pastedText) return;
-
       event.preventDefault();
       const formattedText = normalizePastedText(pastedText);
-      ocrRunId.current += 1;
-      setPastedImage(null);
-      setSourceView("text");
-      setOcrState("idle");
-      setOcrElapsedMs(null);
-      setOcrError(null);
-
-      const editor = sourceEditorRef.current;
-      const selectionStart = editor?.selectionStart ?? source.length;
-      const selectionEnd = editor?.selectionEnd ?? source.length;
-      const nextSource = `${source.slice(0, selectionStart)}${formattedText}${source.slice(selectionEnd)}`;
-      const nextCursor = selectionStart + formattedText.length;
-      setSource(nextSource);
-
-      window.requestAnimationFrame(() => {
-        sourceEditorRef.current?.focus();
-        sourceEditorRef.current?.setSelectionRange(nextCursor, nextCursor);
-      });
+      const editor = event.currentTarget;
+      const selectionStart = editor.selectionStart;
+      const selectionEnd = editor.selectionEnd;
+      setBlocks((previous) => previous.map((block) =>
+        block.type === "text" && block.id === blockId
+          ? { ...block, text: `${block.text.slice(0, selectionStart)}${formattedText}${block.text.slice(selectionEnd)}` }
+          : block
+      ));
+      focusTextBlock(blockId, selectionStart + formattedText.length);
       return;
     }
 
@@ -271,22 +282,59 @@ function App() {
     const imageFile = imageItem.getAsFile();
     if (!imageFile) return;
     if (imageFile.size > 20 * 1024 * 1024) {
-      setOcrState("error");
-      setOcrError("이미지는 최대 20MB까지 처리할 수 있습니다.");
+      window.alert("이미지는 최대 20MB까지 처리할 수 있습니다.");
       return;
     }
 
+    const editor = event.currentTarget;
+    const selectionStart = editor.selectionStart;
+    const selectionEnd = editor.selectionEnd;
+
     try {
       const imageDataUrl = await readFileAsDataUrl(imageFile);
-      runId.current += 1;
-      setSource("");
-      setTranslations({});
-      setPastedImage(imageDataUrl);
-      setSourceView("image");
-      void runOcr(imageDataUrl);
+      const imageBlock = createImageBlock(imageDataUrl);
+      const trailingBlock = createTextBlock();
+      setBlocks((previous) => previous.flatMap((block) => {
+        if (block.type !== "text" || block.id !== blockId) return [block];
+        return [
+          { ...block, text: block.text.slice(0, selectionStart) },
+          imageBlock,
+          { ...trailingBlock, text: block.text.slice(selectionEnd) }
+        ];
+      }));
+      focusTextBlock(trailingBlock.id, 0);
+      void runOcr(imageBlock.id, imageDataUrl);
     } catch (error) {
-      setOcrState("error");
-      setOcrError(error instanceof Error ? error.message : String(error));
+      window.alert(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const updateTextBlock = (blockId: string, text: string) => {
+    setBlocks((previous) => previous.map((block) =>
+      block.type === "text" && block.id === blockId ? { ...block, text } : block
+    ));
+  };
+
+  const toggleImageBlock = (blockId: string) => {
+    updateImageBlock(blockId, (block) => {
+      if (block.view === "image" && block.ocrState !== "done") return block;
+      if (block.view === "text" && !block.imageDataUrl) return block;
+      return { ...block, view: block.view === "image" ? "text" : "image" };
+    });
+  };
+
+  const deleteImageBlock = (blockId: string) => {
+    ocrRuns.current.delete(blockId);
+    setBlocks((previous) => {
+      const next = previous.filter((block) => block.id !== blockId);
+      return next.length > 0 ? next : [createTextBlock()];
+    });
+  };
+
+  const handleImageKeyDown = (blockId: string, event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleImageBlock(blockId);
     }
   };
 
@@ -294,10 +342,7 @@ function App() {
     setTranslations((previous) => {
       const current = previous[key];
       if (!current) return previous;
-      return {
-        ...previous,
-        [key]: { ...current, target: value, state: "done", edited: true }
-      };
+      return { ...previous, [key]: { ...current, target: value, state: "done", edited: true } };
     });
   };
 
@@ -318,40 +363,27 @@ function App() {
     setTranslationRevision((revision) => revision + 1);
   };
 
-  const changeSourceLanguage = (nextLanguage: Language) => {
+  const changeLanguages = (nextSourceLanguage: Language) => {
     runId.current += 1;
-    setSourceLanguage(nextLanguage);
-    setTargetLanguage(nextLanguage === "en" ? "ko" : "en");
-    if (pastedImage) setSource("");
+    setSourceLanguage(nextSourceLanguage);
+    setTargetLanguage(nextSourceLanguage === "en" ? "ko" : "en");
     setTranslations({});
     setTranslationRevision((revision) => revision + 1);
-  };
-
-  const changeTargetLanguage = (nextLanguage: Language) => {
-    runId.current += 1;
-    setTargetLanguage(nextLanguage);
-    setSourceLanguage(nextLanguage === "en" ? "ko" : "en");
-    if (pastedImage) setSource("");
-    setTranslations({});
-    setTranslationRevision((revision) => revision + 1);
+    imageBlocks.forEach((block) => {
+      if (block.imageDataUrl) void runOcr(block.id, block.imageDataUrl, nextSourceLanguage);
+    });
   };
 
   const newDocument = () => {
-    if (source.trim() && !window.confirm("현재 문서를 비우고 새로 시작할까요?")) return;
-    ocrRunId.current += 1;
-    setSource("");
+    const hasContent = source.trim() || imageBlocks.length > 0;
+    if (hasContent && !window.confirm("현재 문서를 비우고 새로 시작할까요?")) return;
+    ocrRuns.current.clear();
+    setBlocks([createTextBlock()]);
     setTranslations({});
-    setPastedImage(null);
-    setSourceView("text");
-    setOcrState("idle");
-    setOcrElapsedMs(null);
-    setOcrError(null);
+    setEditingOcrBlockId(null);
   };
 
-  const translatedCount = sentences.filter(
-    ({ key }) => translations[key]?.state === "done"
-  ).length;
-
+  const translatedCount = sentences.filter(({ key }) => translations[key]?.state === "done").length;
   const statusLabel = checking
     ? "연결 확인 중"
     : status?.running && status.modelInstalled
@@ -365,33 +397,22 @@ function App() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">N</span>
-          <div>
-            <h1>나란히</h1>
-            <p>로컬 병렬 번역 에디터</p>
-          </div>
+          <div><h1>나란히</h1><p>로컬 병렬 번역 에디터</p></div>
         </div>
 
         <div className="toolbar">
           <div className="language-settings" aria-label="번역 언어 설정">
             <label className="language-field">
               <span>원문</span>
-              <select
-                value={sourceLanguage}
-                onChange={(event) => changeSourceLanguage(event.target.value as Language)}
-              >
-                <option value="en">English</option>
-                <option value="ko">한국어</option>
+              <select value={sourceLanguage} onChange={(event) => changeLanguages(event.target.value as Language)}>
+                <option value="en">English</option><option value="ko">한국어</option>
               </select>
             </label>
             <span className="language-arrow" aria-hidden="true">→</span>
             <label className="language-field">
               <span>번역</span>
-              <select
-                value={targetLanguage}
-                onChange={(event) => changeTargetLanguage(event.target.value as Language)}
-              >
-                <option value="en">English</option>
-                <option value="ko">한국어</option>
+              <select value={targetLanguage} onChange={(event) => changeLanguages(event.target.value === "en" ? "ko" : "en")}>
+                <option value="en">English</option><option value="ko">한국어</option>
               </select>
             </label>
           </div>
@@ -402,19 +423,14 @@ function App() {
               <option value="translategemma:12b-it-q8_0">TranslateGemma 12B · 고품질</option>
             </select>
           </label>
-          <button className="secondary-button" type="button" onClick={newDocument}>
-            새 문서
-          </button>
+          <button className="secondary-button" type="button" onClick={newDocument}>새 문서</button>
         </div>
       </header>
 
       <section className={`connection-banner ${status?.running && status.modelInstalled ? "ready" : "warning"}`}>
         <div className="connection-copy">
-          <span className="status-dot" />
-          <strong>{statusLabel}</strong>
-          {!checking && status && !(status.running && status.modelInstalled) && (
-            <span>{status.message}</span>
-          )}
+          <span className="status-dot" /><strong>{statusLabel}</strong>
+          {!checking && status && !(status.running && status.modelInstalled) && <span>{status.message}</span>}
         </div>
         {!checking && !(status?.running && status?.modelInstalled) && (
           <button type="button" onClick={() => void checkOllama()}>다시 확인</button>
@@ -422,140 +438,153 @@ function App() {
       </section>
 
       <section className="workspace">
-        <div className="pane source-pane" onPaste={(event) => void handlePaste(event)}>
+        <div className="pane source-pane">
           <div className="pane-heading">
-            <div>
-              <span className="eyebrow">SOURCE</span>
-              <h2>{LANGUAGE_LABELS[sourceLanguage].native}</h2>
-            </div>
-            <div className="pane-heading-actions">
-              <span className="pane-meta">
-                {ocrState === "processing"
-                  ? "OCR 인식 중"
-                  : ocrElapsedMs !== null
-                    ? `OCR ${(ocrElapsedMs / 1000).toFixed(2)}초 · `
-                    : ""}
-                {words} {sourceLanguage === "en" ? "words" : "어절"} · {sentences.length} sentences
-              </span>
-              {pastedImage && (
-                <div className="view-toggle" aria-label="원문 보기 방식">
-                  <button
-                    className={sourceView === "image" ? "active" : ""}
-                    type="button"
-                    onClick={() => setSourceView("image")}
-                  >
-                    이미지
-                  </button>
-                  <button
-                    className={sourceView === "text" ? "active" : ""}
-                    type="button"
-                    disabled={ocrState !== "done"}
-                    onClick={() => setSourceView("text")}
-                  >
-                    OCR 텍스트
-                  </button>
-                </div>
-              )}
-            </div>
+            <div><span className="eyebrow">SOURCE</span><h2>{LANGUAGE_LABELS[sourceLanguage].native}</h2></div>
+            <span className="pane-meta">
+              {processingOcrCount > 0 ? `OCR ${processingOcrCount}개 인식 중 · ` : ""}
+              {words} {sourceLanguage === "en" ? "words" : "어절"} · {sentences.length} sentences
+            </span>
           </div>
-          {pastedImage && sourceView === "image" ? (
-            <div className="image-source-view" tabIndex={0} aria-label="붙여넣은 원문 이미지">
-              <img src={pastedImage} alt="OCR로 인식할 붙여넣은 원문" />
-              {ocrState === "processing" && (
-                <div className="ocr-overlay">
-                  <div className="ocr-spinner" />
-                  <strong>텍스트를 인식하고 있습니다</strong>
-                  <span>Apple Vision · 이 Mac에서 처리 중</span>
-                </div>
-              )}
-              {ocrState === "error" && (
-                <div className="ocr-overlay error">
-                  <strong>OCR에 실패했습니다</strong>
-                  <span>{ocrError}</span>
-                  <button type="button" onClick={() => void runOcr(pastedImage)}>다시 인식</button>
-                </div>
-              )}
-              {ocrState === "done" && (
-                <div className="image-caption">
-                  텍스트 인식 완료 · 상단의 OCR 텍스트를 눌러 확인하세요
-                </div>
-              )}
-            </div>
-          ) : (
-            <textarea
-              ref={sourceEditorRef}
-              className="source-editor"
-              value={source}
-              onChange={(event) => setSource(event.target.value)}
-              placeholder={
-                sourceLanguage === "en"
-                  ? "Start writing in English, or paste an image…"
-                  : "한국어로 작성하거나 이미지를 붙여넣으세요…"
-              }
-              spellCheck={sourceLanguage === "en"}
-              lang={sourceLanguage}
-              autoFocus
-              aria-label={`${LANGUAGE_LABELS[sourceLanguage].native} 원문`}
-            />
-          )}
+
+          <div className="mixed-editor" aria-label={`${LANGUAGE_LABELS[sourceLanguage].native} 원문 문서`}>
+            {blocks.map((block, index) => block.type === "text" ? (
+              <div className="document-block text-document-block" key={block.id}>
+                <textarea
+                  ref={(editor) => {
+                    if (editor) textEditorRefs.current.set(block.id, editor);
+                    else textEditorRefs.current.delete(block.id);
+                  }}
+                  className="block-text-editor"
+                  value={block.text}
+                  rows={textAreaRows(block.text)}
+                  onChange={(event) => updateTextBlock(block.id, event.target.value)}
+                  onPaste={(event) => void handleTextPaste(block.id, event)}
+                  placeholder={blocks.length === 1 && index === 0
+                    ? sourceLanguage === "en"
+                      ? "Start writing in English, or paste an image…"
+                      : "한국어로 작성하거나 이미지를 붙여넣으세요…"
+                    : "계속 작성하세요…"}
+                  spellCheck={sourceLanguage === "en"}
+                  lang={sourceLanguage}
+                  autoFocus={index === 0}
+                  aria-label={`${index + 1}번째 원문 텍스트`}
+                />
+              </div>
+            ) : (
+              <div className={`document-block media-document-block ${block.view === "text" ? "showing-text" : "showing-image"}`} key={block.id}>
+                {block.view === "image" && block.imageDataUrl ? (
+                  <div
+                    className="inline-image-block"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={block.ocrState === "done" ? "OCR 텍스트 보기" : "붙여넣은 이미지"}
+                    onClick={() => toggleImageBlock(block.id)}
+                    onKeyDown={(event) => handleImageKeyDown(block.id, event)}
+                  >
+                    <img src={block.imageDataUrl} alt="OCR로 인식한 붙여넣은 원문" />
+                    {block.ocrState === "processing" && (
+                      <div className="inline-ocr-status"><div className="ocr-spinner" /><strong>OCR 인식 중</strong></div>
+                    )}
+                    {block.ocrState === "error" && (
+                      <div className="inline-ocr-status error"><strong>OCR 실패</strong><span>{block.error}</span></div>
+                    )}
+                    <div className="block-hover-actions">
+                      {block.ocrState === "done" && <span>OCR 텍스트 보기</span>}
+                      {block.ocrState === "error" && (
+                        <button type="button" onClick={(event) => {
+                          event.stopPropagation();
+                          if (block.imageDataUrl) void runOcr(block.id, block.imageDataUrl);
+                        }}>다시 인식</button>
+                      )}
+                      <button className="danger" type="button" onClick={(event) => {
+                        event.stopPropagation();
+                        deleteImageBlock(block.id);
+                      }}>삭제</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className="inline-ocr-text"
+                    role="button"
+                    tabIndex={block.imageDataUrl ? 0 : -1}
+                    aria-label={block.imageDataUrl ? "이미지 보기" : "저장된 OCR 텍스트"}
+                    onClick={() => toggleImageBlock(block.id)}
+                    onKeyDown={(event) => handleImageKeyDown(block.id, event)}
+                  >
+                    <div className="ocr-text-heading">
+                      <span>OCR TEXT</span>
+                      {block.elapsedMs !== null && <em>{(block.elapsedMs / 1000).toFixed(2)}초</em>}
+                      {!block.imageDataUrl && <em>이미지는 현재 실행에서만 보관됩니다</em>}
+                    </div>
+                    {editingOcrBlockId === block.id ? (
+                      <textarea
+                        autoFocus
+                        value={block.ocrText}
+                        rows={textAreaRows(block.ocrText)}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        onChange={(event) => updateImageBlock(block.id, (current) => ({ ...current, ocrText: event.target.value }))}
+                        onBlur={() => setEditingOcrBlockId(null)}
+                        aria-label="OCR 텍스트 수정"
+                      />
+                    ) : (
+                      <p>{block.ocrText || "인식된 텍스트가 없습니다."}</p>
+                    )}
+                    <div className="block-hover-actions">
+                      {block.imageDataUrl && <span>이미지 보기</span>}
+                      <button type="button" onClick={(event) => {
+                        event.stopPropagation();
+                        setEditingOcrBlockId(block.id);
+                      }}>수정</button>
+                      {block.imageDataUrl && (
+                        <button type="button" onClick={(event) => {
+                          event.stopPropagation();
+                          void runOcr(block.id, block.imageDataUrl!);
+                        }}>다시 인식</button>
+                      )}
+                      <button className="danger" type="button" onClick={(event) => {
+                        event.stopPropagation();
+                        deleteImageBlock(block.id);
+                      }}>삭제</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="divider" aria-hidden="true"><span>→</span></div>
 
         <div className="pane target-pane">
           <div className="pane-heading">
-            <div>
-              <span className="eyebrow">TRANSLATION</span>
-              <h2>{LANGUAGE_LABELS[targetLanguage].native}</h2>
-            </div>
+            <div><span className="eyebrow">TRANSLATION</span><h2>{LANGUAGE_LABELS[targetLanguage].native}</h2></div>
             <span className="pane-meta">{translatedCount}/{sentences.length} 완료</span>
           </div>
-
           <div className={`translation-list ${sentences.length === 0 ? "empty" : ""}`}>
             {sentences.length === 0 ? (
-              <div className="empty-state">
-                <span>가</span>
-                <p>
-                  왼쪽에서 {LANGUAGE_LABELS[sourceLanguage].native} 문장을 작성하면<br />
-                  {LANGUAGE_LABELS[targetLanguage].native} 번역이 여기에 나타납니다.
-                </p>
-              </div>
-            ) : (
-              sentences.map((sentence, index) => {
-                const translation = translations[sentence.key];
-                return (
-                  <article className="translation-card" key={sentence.key}>
-                    <span className="sentence-number">{String(index + 1).padStart(2, "0")}</span>
-                    {translation?.state === "done" && translation.elapsedMs !== undefined && (
-                      <span className="elapsed-time">
-                        {(translation.elapsedMs / 1000).toFixed(2)}초
-                      </span>
-                    )}
-                    {translation?.state === "done" ? (
-                      <textarea
-                        value={translation.target}
-                        onChange={(event) => updateTarget(sentence.key, event.target.value)}
-                        aria-label={`${index + 1}번 문장 번역`}
-                        lang={targetLanguage}
-                        rows={Math.max(2, Math.ceil(translation.target.length / 34))}
-                      />
-                    ) : translation?.state === "error" ? (
-                      <div className="translation-error">
-                        <p>번역하지 못했습니다.</p>
-                        <button type="button" onClick={() => retry(sentence.key)}>다시 번역</button>
-                      </div>
-                    ) : status?.running && status.modelInstalled ? (
-                      <div className="translation-loading">
-                        <span /><span /><span />
-                        <em>번역 중</em>
-                      </div>
-                    ) : (
-                      <div className="translation-waiting">Ollama 준비 후 자동으로 번역됩니다.</div>
-                    )}
-                  </article>
-                );
-              })
-            )}
+              <div className="empty-state"><span>가</span><p>왼쪽에서 {LANGUAGE_LABELS[sourceLanguage].native} 문장을 작성하면<br />{LANGUAGE_LABELS[targetLanguage].native} 번역이 여기에 나타납니다.</p></div>
+            ) : sentences.map((sentence, index) => {
+              const translation = translations[sentence.key];
+              return (
+                <article className="translation-card" key={sentence.key}>
+                  <span className="sentence-number">{String(index + 1).padStart(2, "0")}</span>
+                  {translation?.state === "done" && translation.elapsedMs !== undefined && (
+                    <span className="elapsed-time">{(translation.elapsedMs / 1000).toFixed(2)}초</span>
+                  )}
+                  {translation?.state === "done" ? (
+                    <textarea value={translation.target} onChange={(event) => updateTarget(sentence.key, event.target.value)} aria-label={`${index + 1}번 문장 번역`} lang={targetLanguage} rows={Math.max(2, Math.ceil(translation.target.length / 34))} />
+                  ) : translation?.state === "error" ? (
+                    <div className="translation-error"><p>번역하지 못했습니다.</p><button type="button" onClick={() => retry(sentence.key)}>다시 번역</button></div>
+                  ) : status?.running && status.modelInstalled ? (
+                    <div className="translation-loading"><span /><span /><span /><em>번역 중</em></div>
+                  ) : (
+                    <div className="translation-waiting">Ollama 준비 후 자동으로 번역됩니다.</div>
+                  )}
+                </article>
+              );
+            })}
           </div>
         </div>
       </section>
