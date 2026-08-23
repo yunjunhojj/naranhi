@@ -32,7 +32,7 @@ button { cursor: pointer; }
   -webkit-app-region: drag;
 }
 
-.brand, .toolbar, .connection-banner button, .model-field, .secondary-button {
+.brand, .toolbar, .connection-banner button, .model-field, .language-field, .secondary-button {
   -webkit-app-region: no-drag;
 }
 
@@ -47,14 +47,17 @@ button { cursor: pointer; }
 .brand p { margin: 4px 0 0; color: #77736b; font-size: 11px; }
 
 .toolbar { display: flex; align-items: end; gap: 10px; }
-.model-field { display: grid; gap: 4px; }
-.model-field span { color: #817d74; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
-.model-field select {
+.model-field, .language-field { display: grid; gap: 4px; }
+.model-field span, .language-field span { color: #817d74; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.model-field select, .language-field select {
   min-width: 225px; height: 34px; padding: 0 30px 0 11px;
   color: #34322e; background: rgba(255,255,255,.65);
   border: 1px solid #cbc7bd; border-radius: 8px; outline: none;
 }
-.model-field select:focus { border-color: #637d73; box-shadow: 0 0 0 3px rgba(99,125,115,.13); }
+.language-settings { display: flex; align-items: end; gap: 6px; }
+.language-field select { min-width: 92px; }
+.language-arrow { height: 34px; display: grid; place-items: center; color: #8c877e; font-size: 12px; }
+.model-field select:focus, .language-field select:focus { border-color: #637d73; box-shadow: 0 0 0 3px rgba(99,125,115,.13); }
 .secondary-button, .connection-banner button {
   height: 34px; padding: 0 13px; border: 1px solid #c8c4ba; border-radius: 8px;
   color: #494640; background: rgba(255,255,255,.58); font-weight: 600; font-size: 12px;
@@ -162,7 +165,7 @@ footer {
   .workspace, .source-editor, .divider span { background: #252725; color: #e9e5dc; }
   .target-pane, .translation-list { background: #222422; }
   .divider { background: #1e211f; border-color: #3b3d39; }
-  .model-field select, .secondary-button { color: #e4e0d7; background: #292c29; border-color: #484b46; }
+  .model-field select, .language-field select, .secondary-button { color: #e4e0d7; background: #292c29; border-color: #484b46; }
   .source-editor, .translation-card textarea { color: #e9e5dc; }
   .translation-card { border-color: #3a3c38; }
   .empty-state span { background: #292b29; border-color: #454743; }

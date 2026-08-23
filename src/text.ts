@@ -3,6 +3,8 @@ export type Sentence = {
   text: string;
 };
 
+export type Language = "en" | "ko";
+
 function hashText(value: string): string {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -12,11 +14,11 @@ function hashText(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-export function splitSentences(source: string): Sentence[] {
+export function splitSentences(source: string, language: Language): Sentence[] {
   const trimmed = source.trim();
   if (!trimmed) return [];
 
-  const segmenter = new Intl.Segmenter("en", { granularity: "sentence" });
+  const segmenter = new Intl.Segmenter(language, { granularity: "sentence" });
   const occurrences = new Map<string, number>();
 
   return Array.from(segmenter.segment(trimmed))

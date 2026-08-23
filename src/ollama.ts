@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { Language } from "./text";
 
 export type OllamaStatus = {
   running: boolean;
@@ -16,6 +17,16 @@ export async function getOllamaStatus(model: string): Promise<OllamaStatus> {
   return invoke<OllamaStatus>("ollama_status", { model });
 }
 
-export async function translateSentence(text: string, model: string): Promise<TranslationResult> {
-  return invoke<TranslationResult>("translate_sentence", { text, model });
+export async function translateSentence(
+  text: string,
+  model: string,
+  sourceLanguage: Language,
+  targetLanguage: Language
+): Promise<TranslationResult> {
+  return invoke<TranslationResult>("translate_sentence", {
+    text,
+    model,
+    sourceLanguage,
+    targetLanguage
+  });
 }

@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOllamaStatus, OllamaStatus, translateSentence } from "./ollama";
-import { countWords, splitSentences } from "./text";
+import { countWords, Language, splitSentences } from "./text";
 
 const DEFAULT_MODEL = "translategemma:12b-it-q4_K_M";
 const STORAGE_KEY = "parallel-translator-document-v1";
+
+const LANGUAGE_LABELS: Record<Language, { native: string }> = {
+  en: { native: "English" },
+  ko: { native: "한국어" }
+};
 
 type TranslationState = "idle" | "queued" | "translating" | "done" | "error";
 
@@ -19,6 +24,8 @@ type Translation = {
 type SavedDocument = {
   source: string;
   model: string;
+  sourceLanguage?: Language;
+  targetLanguage?: Language;
   translations: Record<string, Translation>;
 };
 
@@ -29,13 +36,25 @@ function loadDocument(): SavedDocument {
   } catch {
     // A damaged draft should never prevent the editor from opening.
   }
-  return { source: "", model: DEFAULT_MODEL, translations: {} };
+  return {
+    source: "",
+    model: DEFAULT_MODEL,
+    sourceLanguage: "en",
+    targetLanguage: "ko",
+    translations: {}
+  };
 }
 
 function App() {
   const initial = useMemo(loadDocument, []);
   const [source, setSource] = useState(initial.source);
   const [model, setModel] = useState(initial.model || DEFAULT_MODEL);
+  const [sourceLanguage, setSourceLanguage] = useState<Language>(
+    initial.sourceLanguage ?? "en"
+  );
+  const [targetLanguage, setTargetLanguage] = useState<Language>(
+    initial.targetLanguage ?? "ko"
+  );
   const [translations, setTranslations] = useState<Record<string, Translation>>(
     initial.translations ?? {}
   );
@@ -45,7 +64,10 @@ function App() {
   const [translationRevision, setTranslationRevision] = useState(0);
   const runId = useRef(0);
 
-  const sentences = useMemo(() => splitSentences(source), [source]);
+  const sentences = useMemo(
+    () => splitSentences(source, sourceLanguage),
+    [source, sourceLanguage]
+  );
   const words = useMemo(() => countWords(source), [source]);
 
   const checkOllama = useCallback(async () => {
@@ -70,12 +92,18 @@ function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const payload: SavedDocument = { source, model, translations };
+      const payload: SavedDocument = {
+        source,
+        model,
+        sourceLanguage,
+        targetLanguage,
+        translations
+      };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
       setLastSaved(new Date());
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [model, source, translations]);
+  }, [model, source, sourceLanguage, targetLanguage, translations]);
 
   useEffect(() => {
     const currentRun = ++runId.current;
@@ -100,7 +128,12 @@ function App() {
         }));
 
         try {
-          const result = await translateSentence(sentence.text, model);
+          const result = await translateSentence(
+            sentence.text,
+            model,
+            sourceLanguage,
+            targetLanguage
+          );
           if (runId.current !== currentRun) return;
           setTranslations((previous) => ({
             ...previous,
@@ -127,7 +160,15 @@ function App() {
     }, 800);
 
     return () => window.clearTimeout(timer);
-  }, [model, sentences, status?.modelInstalled, status?.running, translationRevision]);
+  }, [
+    model,
+    sentences,
+    sourceLanguage,
+    status?.modelInstalled,
+    status?.running,
+    targetLanguage,
+    translationRevision
+  ]);
 
   const updateTarget = (key: string, value: string) => {
     setTranslations((previous) => {
@@ -153,6 +194,22 @@ function App() {
   const changeModel = (nextModel: string) => {
     runId.current += 1;
     setModel(nextModel);
+    setTranslations({});
+    setTranslationRevision((revision) => revision + 1);
+  };
+
+  const changeSourceLanguage = (nextLanguage: Language) => {
+    runId.current += 1;
+    setSourceLanguage(nextLanguage);
+    setTargetLanguage(nextLanguage === "en" ? "ko" : "en");
+    setTranslations({});
+    setTranslationRevision((revision) => revision + 1);
+  };
+
+  const changeTargetLanguage = (nextLanguage: Language) => {
+    runId.current += 1;
+    setTargetLanguage(nextLanguage);
+    setSourceLanguage(nextLanguage === "en" ? "ko" : "en");
     setTranslations({});
     setTranslationRevision((revision) => revision + 1);
   };
@@ -187,6 +244,29 @@ function App() {
         </div>
 
         <div className="toolbar">
+          <div className="language-settings" aria-label="번역 언어 설정">
+            <label className="language-field">
+              <span>원문</span>
+              <select
+                value={sourceLanguage}
+                onChange={(event) => changeSourceLanguage(event.target.value as Language)}
+              >
+                <option value="en">English</option>
+                <option value="ko">한국어</option>
+              </select>
+            </label>
+            <span className="language-arrow" aria-hidden="true">→</span>
+            <label className="language-field">
+              <span>번역</span>
+              <select
+                value={targetLanguage}
+                onChange={(event) => changeTargetLanguage(event.target.value as Language)}
+              >
+                <option value="en">English</option>
+                <option value="ko">한국어</option>
+              </select>
+            </label>
+          </div>
           <label className="model-field">
             <span>모델</span>
             <select value={model} onChange={(event) => changeModel(event.target.value)}>
@@ -218,18 +298,25 @@ function App() {
           <div className="pane-heading">
             <div>
               <span className="eyebrow">SOURCE</span>
-              <h2>English</h2>
+              <h2>{LANGUAGE_LABELS[sourceLanguage].native}</h2>
             </div>
-            <span className="pane-meta">{words} words · {sentences.length} sentences</span>
+            <span className="pane-meta">
+              {words} {sourceLanguage === "en" ? "words" : "어절"} · {sentences.length} sentences
+            </span>
           </div>
           <textarea
             className="source-editor"
             value={source}
             onChange={(event) => setSource(event.target.value)}
-            placeholder="Start writing in English…"
-            spellCheck
+            placeholder={
+              sourceLanguage === "en"
+                ? "Start writing in English…"
+                : "한국어로 작성을 시작하세요…"
+            }
+            spellCheck={sourceLanguage === "en"}
+            lang={sourceLanguage}
             autoFocus
-            aria-label="영어 원문"
+            aria-label={`${LANGUAGE_LABELS[sourceLanguage].native} 원문`}
           />
         </div>
 
@@ -239,7 +326,7 @@ function App() {
           <div className="pane-heading">
             <div>
               <span className="eyebrow">TRANSLATION</span>
-              <h2>한국어</h2>
+              <h2>{LANGUAGE_LABELS[targetLanguage].native}</h2>
             </div>
             <span className="pane-meta">{translatedCount}/{sentences.length} 완료</span>
           </div>
@@ -248,7 +335,10 @@ function App() {
             {sentences.length === 0 ? (
               <div className="empty-state">
                 <span>가</span>
-                <p>왼쪽에서 영어를 작성하면<br />문장별 번역이 여기에 나타납니다.</p>
+                <p>
+                  왼쪽에서 {LANGUAGE_LABELS[sourceLanguage].native} 문장을 작성하면<br />
+                  {LANGUAGE_LABELS[targetLanguage].native} 번역이 여기에 나타납니다.
+                </p>
               </div>
             ) : (
               sentences.map((sentence, index) => {
@@ -266,6 +356,7 @@ function App() {
                         value={translation.target}
                         onChange={(event) => updateTarget(sentence.key, event.target.value)}
                         aria-label={`${index + 1}번 문장 번역`}
+                        lang={targetLanguage}
                         rows={Math.max(2, Math.ceil(translation.target.length / 34))}
                       />
                     ) : translation?.state === "error" ? (

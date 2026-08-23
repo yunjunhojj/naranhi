@@ -125,7 +125,12 @@ async fn ollama_status(model: String) -> Result<OllamaStatus, String> {
 }
 
 #[tauri::command]
-async fn translate_sentence(text: String, model: String) -> Result<TranslationResult, String> {
+async fn translate_sentence(
+    text: String,
+    model: String,
+    source_language: String,
+    target_language: String,
+) -> Result<TranslationResult, String> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(TranslationResult {
@@ -137,8 +142,22 @@ async fn translate_sentence(text: String, model: String) -> Result<TranslationRe
         return Err("한 번에 번역할 문장이 너무 깁니다.".to_string());
     }
 
+    let (source_name, source_code) = match source_language.as_str() {
+        "en" => ("English", "en"),
+        "ko" => ("Korean", "ko"),
+        _ => return Err("지원하지 않는 원문 언어입니다.".to_string()),
+    };
+    let (target_name, target_code) = match target_language.as_str() {
+        "en" => ("English", "en"),
+        "ko" => ("Korean", "ko"),
+        _ => return Err("지원하지 않는 번역 언어입니다.".to_string()),
+    };
+    if source_code == target_code {
+        return Err("원문 언어와 번역 언어는 달라야 합니다.".to_string());
+    }
+
     let prompt = format!(
-        "You are a professional English (en) to Korean (ko) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Korean grammar, vocabulary, and cultural sensitivities.\nProduce only the Korean translation, without any additional explanations or commentary. Please translate the following English text into Korean:\n\n\n{text}"
+        "You are a professional {source_name} ({source_code}) to {target_name} ({target_code}) translator. Your goal is to accurately convey the meaning and nuances of the original {source_name} text while adhering to {target_name} grammar, vocabulary, and cultural sensitivities.\nProduce only the {target_name} translation, without any additional explanations or commentary. Please translate the following {source_name} text into {target_name}:\n\n\n{text}"
     );
 
     let request = ChatRequest {
