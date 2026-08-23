@@ -84,7 +84,7 @@ function App() {
 
       const pending = sentences.filter((sentence) => {
         const existing = translations[sentence.key];
-        return !existing || existing.source !== sentence.text || existing.state === "error";
+        return !existing || existing.source !== sentence.text || existing.state !== "done";
       });
 
       for (const sentence of pending) {
