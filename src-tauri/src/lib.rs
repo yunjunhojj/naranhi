@@ -215,7 +215,10 @@ async fn translate_sentence(
 }
 
 #[tauri::command]
-fn recognize_image_text(image_data_url: String, language: String) -> Result<OcrResult, String> {
+async fn recognize_image_text(
+    image_data_url: String,
+    language: String,
+) -> Result<OcrResult, String> {
     const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
     let (metadata, encoded) = image_data_url
@@ -236,7 +239,11 @@ fn recognize_image_text(image_data_url: String, language: String) -> Result<OcrR
     }
 
     let started_at = Instant::now();
-    let text = ocr::recognize_image_bytes(&image_bytes, &language)?;
+    let text = tauri::async_runtime::spawn_blocking(move || {
+        ocr::recognize_image_bytes(&image_bytes, &language)
+    })
+    .await
+    .map_err(|error| format!("OCR 작업을 실행하지 못했습니다: {error}"))??;
 
     Ok(OcrResult {
         text,

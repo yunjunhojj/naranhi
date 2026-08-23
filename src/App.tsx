@@ -1,5 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getOllamaStatus, OllamaStatus, translateSentence } from "./ollama";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent
+} from "react";
+import {
+  getOllamaStatus,
+  OllamaStatus,
+  recognizeImageText,
+  translateSentence
+} from "./ollama";
 import { countWords, Language, splitSentences } from "./text";
 
 const DEFAULT_MODEL = "translategemma:12b-it-q4_K_M";
@@ -11,6 +23,8 @@ const LANGUAGE_LABELS: Record<Language, { native: string }> = {
 };
 
 type TranslationState = "idle" | "queued" | "translating" | "done" | "error";
+type SourceView = "image" | "text";
+type OcrState = "idle" | "processing" | "done" | "error";
 
 type Translation = {
   source: string;
@@ -45,6 +59,18 @@ function loadDocument(): SavedDocument {
   };
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("이미지를 읽지 못했습니다."));
+    };
+    reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다."));
+    reader.readAsDataURL(file);
+  });
+}
+
 function App() {
   const initial = useMemo(loadDocument, []);
   const [source, setSource] = useState(initial.source);
@@ -62,7 +88,14 @@ function App() {
   const [checking, setChecking] = useState(true);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [translationRevision, setTranslationRevision] = useState(0);
+  const [pastedImage, setPastedImage] = useState<string | null>(null);
+  const [sourceView, setSourceView] = useState<SourceView>("text");
+  const [ocrState, setOcrState] = useState<OcrState>("idle");
+  const [ocrElapsedMs, setOcrElapsedMs] = useState<number | null>(null);
+  const [ocrError, setOcrError] = useState<string | null>(null);
   const runId = useRef(0);
+  const ocrRunId = useRef(0);
+  const previousOcrLanguage = useRef(sourceLanguage);
 
   const sentences = useMemo(
     () => splitSentences(source, sourceLanguage),
@@ -170,6 +203,67 @@ function App() {
     translationRevision
   ]);
 
+  const runOcr = useCallback(
+    async (imageDataUrl: string) => {
+      const currentRun = ++ocrRunId.current;
+      setOcrState("processing");
+      setOcrError(null);
+      setOcrElapsedMs(null);
+
+      try {
+        const result = await recognizeImageText(imageDataUrl, sourceLanguage);
+        if (ocrRunId.current !== currentRun) return;
+
+        runId.current += 1;
+        setSource(result.text);
+        setTranslations({});
+        setTranslationRevision((revision) => revision + 1);
+        setOcrElapsedMs(result.elapsedMs);
+        setOcrState("done");
+      } catch (error) {
+        if (ocrRunId.current !== currentRun) return;
+        setOcrError(error instanceof Error ? error.message : String(error));
+        setOcrState("error");
+      }
+    },
+    [sourceLanguage]
+  );
+
+  useEffect(() => {
+    if (previousOcrLanguage.current === sourceLanguage) return;
+    previousOcrLanguage.current = sourceLanguage;
+    if (pastedImage) void runOcr(pastedImage);
+  }, [pastedImage, runOcr, sourceLanguage]);
+
+  const handlePaste = async (event: ReactClipboardEvent<HTMLDivElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find((item) =>
+      item.type.startsWith("image/")
+    );
+    if (!imageItem) return;
+
+    event.preventDefault();
+    const imageFile = imageItem.getAsFile();
+    if (!imageFile) return;
+    if (imageFile.size > 20 * 1024 * 1024) {
+      setOcrState("error");
+      setOcrError("이미지는 최대 20MB까지 처리할 수 있습니다.");
+      return;
+    }
+
+    try {
+      const imageDataUrl = await readFileAsDataUrl(imageFile);
+      runId.current += 1;
+      setSource("");
+      setTranslations({});
+      setPastedImage(imageDataUrl);
+      setSourceView("image");
+      void runOcr(imageDataUrl);
+    } catch (error) {
+      setOcrState("error");
+      setOcrError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const updateTarget = (key: string, value: string) => {
     setTranslations((previous) => {
       const current = previous[key];
@@ -202,6 +296,7 @@ function App() {
     runId.current += 1;
     setSourceLanguage(nextLanguage);
     setTargetLanguage(nextLanguage === "en" ? "ko" : "en");
+    if (pastedImage) setSource("");
     setTranslations({});
     setTranslationRevision((revision) => revision + 1);
   };
@@ -210,14 +305,21 @@ function App() {
     runId.current += 1;
     setTargetLanguage(nextLanguage);
     setSourceLanguage(nextLanguage === "en" ? "ko" : "en");
+    if (pastedImage) setSource("");
     setTranslations({});
     setTranslationRevision((revision) => revision + 1);
   };
 
   const newDocument = () => {
     if (source.trim() && !window.confirm("현재 문서를 비우고 새로 시작할까요?")) return;
+    ocrRunId.current += 1;
     setSource("");
     setTranslations({});
+    setPastedImage(null);
+    setSourceView("text");
+    setOcrState("idle");
+    setOcrElapsedMs(null);
+    setOcrError(null);
   };
 
   const translatedCount = sentences.filter(
@@ -294,30 +396,81 @@ function App() {
       </section>
 
       <section className="workspace">
-        <div className="pane source-pane">
+        <div className="pane source-pane" onPaste={(event) => void handlePaste(event)}>
           <div className="pane-heading">
             <div>
               <span className="eyebrow">SOURCE</span>
               <h2>{LANGUAGE_LABELS[sourceLanguage].native}</h2>
             </div>
-            <span className="pane-meta">
-              {words} {sourceLanguage === "en" ? "words" : "어절"} · {sentences.length} sentences
-            </span>
+            <div className="pane-heading-actions">
+              <span className="pane-meta">
+                {ocrState === "processing"
+                  ? "OCR 인식 중"
+                  : ocrElapsedMs !== null
+                    ? `OCR ${(ocrElapsedMs / 1000).toFixed(2)}초 · `
+                    : ""}
+                {words} {sourceLanguage === "en" ? "words" : "어절"} · {sentences.length} sentences
+              </span>
+              {pastedImage && (
+                <div className="view-toggle" aria-label="원문 보기 방식">
+                  <button
+                    className={sourceView === "image" ? "active" : ""}
+                    type="button"
+                    onClick={() => setSourceView("image")}
+                  >
+                    이미지
+                  </button>
+                  <button
+                    className={sourceView === "text" ? "active" : ""}
+                    type="button"
+                    disabled={ocrState !== "done"}
+                    onClick={() => setSourceView("text")}
+                  >
+                    OCR 텍스트
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-          <textarea
-            className="source-editor"
-            value={source}
-            onChange={(event) => setSource(event.target.value)}
-            placeholder={
-              sourceLanguage === "en"
-                ? "Start writing in English…"
-                : "한국어로 작성을 시작하세요…"
-            }
-            spellCheck={sourceLanguage === "en"}
-            lang={sourceLanguage}
-            autoFocus
-            aria-label={`${LANGUAGE_LABELS[sourceLanguage].native} 원문`}
-          />
+          {pastedImage && sourceView === "image" ? (
+            <div className="image-source-view" tabIndex={0} aria-label="붙여넣은 원문 이미지">
+              <img src={pastedImage} alt="OCR로 인식할 붙여넣은 원문" />
+              {ocrState === "processing" && (
+                <div className="ocr-overlay">
+                  <div className="ocr-spinner" />
+                  <strong>텍스트를 인식하고 있습니다</strong>
+                  <span>Apple Vision · 이 Mac에서 처리 중</span>
+                </div>
+              )}
+              {ocrState === "error" && (
+                <div className="ocr-overlay error">
+                  <strong>OCR에 실패했습니다</strong>
+                  <span>{ocrError}</span>
+                  <button type="button" onClick={() => void runOcr(pastedImage)}>다시 인식</button>
+                </div>
+              )}
+              {ocrState === "done" && (
+                <div className="image-caption">
+                  텍스트 인식 완료 · 상단의 OCR 텍스트를 눌러 확인하세요
+                </div>
+              )}
+            </div>
+          ) : (
+            <textarea
+              className="source-editor"
+              value={source}
+              onChange={(event) => setSource(event.target.value)}
+              placeholder={
+                sourceLanguage === "en"
+                  ? "Start writing in English, or paste an image…"
+                  : "한국어로 작성하거나 이미지를 붙여넣으세요…"
+              }
+              spellCheck={sourceLanguage === "en"}
+              lang={sourceLanguage}
+              autoFocus
+              aria-label={`${LANGUAGE_LABELS[sourceLanguage].native} 원문`}
+            />
+          )}
         </div>
 
         <div className="divider" aria-hidden="true"><span>→</span></div>
