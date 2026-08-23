@@ -13,6 +13,11 @@ export type TranslationResult = {
   elapsedMs: number;
 };
 
+export type OcrResult = {
+  text: string;
+  elapsedMs: number;
+};
+
 export async function getOllamaStatus(model: string): Promise<OllamaStatus> {
   return invoke<OllamaStatus>("ollama_status", { model });
 }
@@ -29,4 +34,11 @@ export async function translateSentence(
     sourceLanguage,
     targetLanguage
   });
+}
+
+export async function recognizeImageText(
+  imageDataUrl: string,
+  language: Language
+): Promise<OcrResult> {
+  return invoke<OcrResult>("recognize_image_text", { imageDataUrl, language });
 }

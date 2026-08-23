@@ -1,3 +1,6 @@
+mod ocr;
+
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -52,6 +55,13 @@ struct ChatResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TranslationResult {
+    text: String,
+    elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OcrResult {
     text: String,
     elapsed_ms: u128,
 }
@@ -204,10 +214,44 @@ async fn translate_sentence(
     })
 }
 
+#[tauri::command]
+fn recognize_image_text(image_data_url: String, language: String) -> Result<OcrResult, String> {
+    const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+    let (metadata, encoded) = image_data_url
+        .split_once(',')
+        .ok_or_else(|| "올바른 이미지 데이터가 아닙니다.".to_string())?;
+    if !metadata.starts_with("data:image/") || !metadata.ends_with(";base64") {
+        return Err("지원하지 않는 이미지 데이터 형식입니다.".to_string());
+    }
+    if encoded.len() > MAX_IMAGE_BYTES * 4 / 3 + 4 {
+        return Err("이미지는 최대 20MB까지 처리할 수 있습니다.".to_string());
+    }
+
+    let image_bytes = BASE64
+        .decode(encoded)
+        .map_err(|_| "이미지 데이터를 읽지 못했습니다.".to_string())?;
+    if image_bytes.len() > MAX_IMAGE_BYTES {
+        return Err("이미지는 최대 20MB까지 처리할 수 있습니다.".to_string());
+    }
+
+    let started_at = Instant::now();
+    let text = ocr::recognize_image_bytes(&image_bytes, &language)?;
+
+    Ok(OcrResult {
+        text,
+        elapsed_ms: started_at.elapsed().as_millis(),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![ollama_status, translate_sentence])
+        .invoke_handler(tauri::generate_handler![
+            ollama_status,
+            translate_sentence,
+            recognize_image_text
+        ])
         .run(tauri::generate_context!())
         .expect("error while running the Tauri application");
 }
