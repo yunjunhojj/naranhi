@@ -81,6 +81,14 @@ OCR은 선택한 원문 언어를 우선하여 macOS의 Apple Vision 프레임�
 ollama pull translategemma:12b-it-q4_K_M
 ```
 
+통합 메모리가 32GB 이상이고 더 높은 번역 품질을 원한다면 27B Q4 모델도 사용할 수 있습니다.
+
+```bash
+ollama pull translategemma:27b-it-q4_K_M
+```
+
+27B 모델은 앱의 모델 메뉴에서 `TranslateGemma 27B · 최고 품질`로 선택합니다. 12B보다 메모리를 더 사용하고 번역 속도가 느리므로 기본값은 12B Q4로 유지합니다.
+
 3. 의존성을 설치하고 개발 모드로 실행합니다.
 
 ```bash

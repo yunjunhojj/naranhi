@@ -421,6 +421,7 @@ function App() {
             <select value={model} onChange={(event) => changeModel(event.target.value)}>
               <option value="translategemma:12b-it-q4_K_M">TranslateGemma 12B · 빠름</option>
               <option value="translategemma:12b-it-q8_0">TranslateGemma 12B · 고품질</option>
+              <option value="translategemma:27b-it-q4_K_M">TranslateGemma 27B · 최고 품질</option>
             </select>
           </label>
           <button className="secondary-button" type="button" onClick={newDocument}>새 문서</button>
